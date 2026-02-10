@@ -16,6 +16,9 @@ export function MemberGrid({
   onUpdateTask,
   onDeleteTask,
   onReorderMembers,
+
+  onAssignDrop,
+  onDuplicateTask,
 }: {
   members: Member[];
   tasks: Task[];
@@ -28,6 +31,9 @@ export function MemberGrid({
   onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderMembers: (orderedIds: string[]) => void;
+
+  onAssignDrop: (taskId: string, memberId: string) => void;
+  onDuplicateTask: (taskId: string) => void;
 }) {
   const [name, setName] = useState("");
   const dragId = useRef<string | null>(null);
@@ -79,6 +85,8 @@ export function MemberGrid({
               onDeleteMember={() => onDeleteMember(m.id)}
               onUpdateTask={onUpdateTask}
               onDeleteTask={onDeleteTask}
+              onAssignDrop={onAssignDrop}
+              onDuplicateTask={onDuplicateTask}
             />
           </div>
         ))}

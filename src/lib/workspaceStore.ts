@@ -57,7 +57,9 @@ function sortByOrder<T extends { order?: number; createdAt?: number }>(a: T, b: 
 }
 
 function taskAssignedMinutes(tasks: Task[], memberId: string): number {
-  return tasks.filter((t) => t.assignedTo === memberId).reduce((acc, t) => acc + (Number(t.minutes) || 0), 0);
+  return tasks
+    .filter((t) => t.assignedTo === memberId)
+    .reduce((acc, t) => acc + (Number(t.minutes) || 0), 0);
 }
 
 type StoreState = {
@@ -391,6 +393,33 @@ export function useWorkspaceStore(workspaceId: string) {
     setDoc(doc(cols.tasksCol, t.id), t);
   }
 
+  // ✅ 복제: 동일 업무를 “미배정”으로 하나 더 생성
+  async function duplicateTask(taskId: string) {
+    const src = state.tasks.find((t) => t.id === taskId);
+    if (!src) return;
+
+    const now = Date.now();
+    const maxOrder = state.tasks.reduce((mx, t) => Math.max(mx, Number(t.order) || 0), 0);
+
+    const copy: Task = {
+      ...src,
+      id: "t" + Math.random().toString(16).slice(2, 10),
+      assignedTo: undefined,
+      order: maxOrder + 100,
+      createdAt: now,
+      title: src.title, // 그대로
+    };
+
+    if (state.mode === "demo") {
+      setState((prev) => ({ ...prev, tasks: [copy, ...prev.tasks].sort(sortByOrder) }));
+      return;
+    }
+
+    const cols = getCols();
+    if (!cols) return;
+    await setDoc(doc(cols.tasksCol, copy.id), copy);
+  }
+
   function createMember(name: string) {
     const now = Date.now();
     const maxOrder = state.members.reduce((mx, m) => Math.max(mx, Number(m.order) || 0), 0);
@@ -416,7 +445,9 @@ export function useWorkspaceStore(workspaceId: string) {
     const idToOrder = new Map<string, number>();
     orderedIds.forEach((id, idx) => idToOrder.set(id, (idx + 1) * 100));
 
-    const next = state.tasks.map((t) => (idToOrder.has(t.id) ? { ...t, order: idToOrder.get(t.id)! } : t)).sort(sortByOrder);
+    const next = state.tasks
+      .map((t) => (idToOrder.has(t.id) ? { ...t, order: idToOrder.get(t.id)! } : t))
+      .sort(sortByOrder);
 
     if (state.mode === "demo") {
       setState((prev) => ({ ...prev, tasks: next }));
@@ -432,7 +463,9 @@ export function useWorkspaceStore(workspaceId: string) {
     const idToOrder = new Map<string, number>();
     orderedIds.forEach((id, idx) => idToOrder.set(id, (idx + 1) * 100));
 
-    const next = state.members.map((m) => (idToOrder.has(m.id) ? { ...m, order: idToOrder.get(m.id)! } : m)).sort(sortByOrder);
+    const next = state.members
+      .map((m) => (idToOrder.has(m.id) ? { ...m, order: idToOrder.get(m.id)! } : m))
+      .sort(sortByOrder);
 
     if (state.mode === "demo") {
       setState((prev) => ({ ...prev, members: next }));
@@ -466,6 +499,7 @@ export function useWorkspaceStore(workspaceId: string) {
     createMember,
     updateTask,
     deleteTask,
+    duplicateTask, // ✅ 추가
 
     reorderTasks,
     reorderMembers,

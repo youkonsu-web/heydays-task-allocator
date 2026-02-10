@@ -11,6 +11,16 @@ function ImportantTag() {
   return <span className="tag imp">[중요]</span>;
 }
 
+function minutesToHours(min: number) {
+  const h = (Number(min) || 0) / 60;
+  return Number.isFinite(h) ? Math.round(h * 10) / 10 : 0; // 소수 1자리
+}
+function hoursToMinutes(hours: number) {
+  const h = Number(hours);
+  if (!Number.isFinite(h) || h < 0) return 0;
+  return Math.round(h * 60);
+}
+
 export function TaskList({
   tasks,
   selectedBusiness,
@@ -18,6 +28,7 @@ export function TaskList({
   onCreate,
   onUpdate,
   onDelete,
+  onDuplicate,
   onReorder,
 }: {
   tasks: Task[];
@@ -26,12 +37,13 @@ export function TaskList({
   onCreate: (title: string, minutes: number, business: BusinessKey, important: boolean, description: string) => void;
   onUpdate: (taskId: string, patch: Partial<Task>) => void;
   onDelete: (taskId: string) => void;
+  onDuplicate: (taskId: string) => void;
   onReorder: (orderedIds: string[]) => void;
 }) {
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   const [title, setTitle] = useState("");
-  const [mins, setMins] = useState<number>(60);
+  const [hours, setHours] = useState<number>(1); // ✅ 시간 단위 입력
   const [biz, setBiz] = useState<BusinessKey>("맛집도감");
   const [important, setImportant] = useState(false);
   const [desc, setDesc] = useState("");
@@ -41,6 +53,7 @@ export function TaskList({
     [tasks, selectedBusiness]
   );
 
+  // reorder용(HTML5)
   const dragId = useRef<string | null>(null);
 
   function commitReorder(nextIds: string[]) {
@@ -57,18 +70,13 @@ export function TaskList({
 
       <div className="tabs">
         {BUSINESS_OPTIONS.map((b) => (
-          <button
-            key={b}
-            className={"tab" + (selectedBusiness === b ? " active" : "")}
-            onClick={() => onSelectBusiness(b)}
-          >
+          <button key={b} className={"tab" + (selectedBusiness === b ? " active" : "")} onClick={() => onSelectBusiness(b)}>
             {b}
           </button>
         ))}
         <span className="badge">미배정: {unassigned.length}개</span>
       </div>
 
-      {/* 접힌 추가 영역 */}
       <div className="card" style={{ marginBottom: 12 }}>
         {!isAddOpen ? (
           <div className="row" style={{ justifyContent: "space-between" }}>
@@ -88,10 +96,11 @@ export function TaskList({
                 <button
                   className="btn primary"
                   onClick={() => {
-                    onCreate(title, mins, biz, important, desc);
+                    onCreate(title, hoursToMinutes(hours), biz, important, desc);
                     setTitle("");
                     setDesc("");
                     setImportant(false);
+                    setHours(1);
                     setIsAddOpen(false);
                   }}
                 >
@@ -111,7 +120,7 @@ export function TaskList({
 
               <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="업무 제목" style={{ flex: 1, minWidth: 240 }} />
 
-              <input className="input" type="number" min={0} value={mins} onChange={(e) => setMins(Number(e.target.value))} style={{ width: 120 }} />
+              <input className="input" type="number" min={0} step={0.25} value={hours} onChange={(e) => setHours(Number(e.target.value))} style={{ width: 120 }} />
 
               <label className="check">
                 <input type="checkbox" checked={important} onChange={(e) => setImportant(e.target.checked)} />
@@ -122,8 +131,6 @@ export function TaskList({
             <div style={{ marginTop: 10 }}>
               <textarea className="textarea" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="설명" rows={3} />
             </div>
-
-            <div className="note">시간 단위는 “분” (업무 소요시간). 가용시간은 “시간” 단위로 입력합니다.</div>
           </>
         )}
       </div>
@@ -134,9 +141,16 @@ export function TaskList({
             key={t.id}
             className="task"
             draggable
-            onDragStart={() => (dragId.current = t.id)}
+            onDragStart={(e) => {
+              dragId.current = t.id;
+
+              // ✅ 할당용: HTML5 drop에서 꺼내 쓸 taskId
+              e.dataTransfer.setData("text/taskId", t.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => {
+              // ✅ reorder용(같은 리스트 내부)
               const from = dragId.current;
               const to = t.id;
               if (!from || from === to) return;
@@ -161,13 +175,16 @@ export function TaskList({
                 <div className="title">{t.title}</div>
               </div>
 
-              <div className="meta">{t.minutes}분</div>
+              <div className="meta">{minutesToHours(t.minutes)}h</div>
 
               {openDescTaskId === t.id && (
                 <div className="descBox" onClick={(e) => e.stopPropagation()}>
                   <div className="descTitle">설명</div>
                   <div className="descBody">{t.description?.trim() ? t.description : <span className="muted">(없음)</span>}</div>
+
                   <div className="row" style={{ marginTop: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    <button className="btn" onClick={() => onDuplicate(t.id)}>복제</button>
+
                     <button
                       className="btn"
                       onClick={() => {
@@ -177,6 +194,7 @@ export function TaskList({
                     >
                       설명수정
                     </button>
+
                     <button
                       className="btn"
                       onClick={() => {
@@ -186,18 +204,21 @@ export function TaskList({
                     >
                       제목수정
                     </button>
+
                     <button
                       className="btn"
                       onClick={() => {
-                        const v = window.prompt("업무 시간(분) 수정", String(t.minutes));
-                        if (v !== null) onUpdate(t.id, { minutes: Math.max(0, Math.round(Number(v))) });
+                        const v = window.prompt("업무 시간(시간) 수정", String(minutesToHours(t.minutes)));
+                        if (v !== null) onUpdate(t.id, { minutes: hoursToMinutes(Number(v)) });
                       }}
                     >
                       시간수정
                     </button>
+
                     <button className="btn" onClick={() => onUpdate(t.id, { important: !t.important })}>
                       {t.important ? "중요해제" : "중요"}
                     </button>
+
                     <button
                       className="btn danger"
                       onClick={() => {
@@ -212,6 +233,7 @@ export function TaskList({
             </div>
 
             <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
+              <button className="btn" onClick={() => onDuplicate(t.id)}>복제</button>
               <button className="btn" onClick={() => setOpenDescTaskId((prev) => (prev === t.id ? null : t.id))}>
                 {openDescTaskId === t.id ? "닫기" : "보기"}
               </button>

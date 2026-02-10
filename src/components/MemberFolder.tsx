@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { BusinessKey, DAY_KEYS, DAY_LABEL, Member, Task } from "@/types";
-import { useDroppable } from "@dnd-kit/core";
 
 function BizTag({ business }: { business: BusinessKey }) {
   const cls = business === "맛집도감" ? "tag mj" : "tag mp";
@@ -14,8 +13,7 @@ function ImportantTag() {
 
 function minutesToHours(min: number) {
   const h = (Number(min) || 0) / 60;
-  // 0.5, 1.25 같은 값 허용
-  return Number.isFinite(h) ? h : 0;
+  return Number.isFinite(h) ? Math.round(h * 10) / 10 : 0;
 }
 function hoursToMinutes(hours: number) {
   const h = Number(hours);
@@ -33,6 +31,8 @@ export function MemberFolder({
   onDeleteMember,
   onUpdateTask,
   onDeleteTask,
+  onAssignDrop,     // ✅ 추가
+  onDuplicateTask,  // ✅ 추가
 }: {
   member: Member;
   tasks: Task[];
@@ -43,19 +43,16 @@ export function MemberFolder({
   onDeleteMember: () => void;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
   onDeleteTask: (taskId: string) => void;
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `member:${member.id}`,
-    data: { type: "member", memberId: member.id },
-  });
 
+  onAssignDrop: (taskId: string, memberId: string) => void;
+  onDuplicateTask: (taskId: string) => void;
+}) {
   const myTasks = useMemo(() => tasks.filter((t) => t.assignedTo === member.id), [tasks, member.id]);
 
   const pct = stats.available > 0 ? Math.min(100, Math.round((stats.assigned / stats.available) * 100)) : 0;
 
   const [editingAvail, setEditingAvail] = useState(false);
 
-  // UI는 hours로 관리
   const [draftAvailHours, setDraftAvailHours] = useState(() => {
     const obj: any = {};
     for (const k of DAY_KEYS) obj[k] = minutesToHours(member.availabilityByDay[k]);
@@ -74,9 +71,25 @@ export function MemberFolder({
   useMemo(() => setNameDraft(member.name), [member.name]);
 
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [isOver, setIsOver] = useState(false);
 
   return (
-    <div ref={setNodeRef} className={"memberDrop" + (isOver ? " active" : "")}>
+    <div
+      className={"memberDrop" + (isOver ? " active" : "")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      }}
+      onDragEnter={() => setIsOver(true)}
+      onDragLeave={() => setIsOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsOver(false);
+
+        const taskId = e.dataTransfer.getData("text/taskId");
+        if (taskId) onAssignDrop(taskId, member.id);
+      }}
+    >
       <div className="memberTop">
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -112,8 +125,7 @@ export function MemberFolder({
           </div>
 
           <div className="small" style={{ marginTop: 6 }}>
-            할당 {Math.round(stats.assigned / 60 * 10) / 10}h · 가용 {Math.round(stats.available / 60 * 10) / 10}h · 남은{" "}
-            {Math.max(0, Math.round(stats.remaining / 60 * 10) / 10)}h
+            할당 {minutesToHours(stats.assigned)}h · 가용 {minutesToHours(stats.available)}h · 남은 {Math.max(0, minutesToHours(stats.remaining))}h
             {stats.remaining < 0 ? <span style={{ color: "var(--danger)", marginLeft: 6 }}>(초과)</span> : null}
           </div>
         </div>
@@ -134,7 +146,6 @@ export function MemberFolder({
             <button
               className="btn primary"
               onClick={() => {
-                // 저장은 분으로 변환
                 const next: any = {};
                 for (const k of DAY_KEYS) next[k] = hoursToMinutes(draftAvailHours[k]);
                 onSaveAvailability(next as Member["availabilityByDay"]);
@@ -175,7 +186,7 @@ export function MemberFolder({
                 <div className="title">{t.title}</div>
               </div>
 
-              <div className="meta">{t.minutes}분</div>
+              <div className="meta">{minutesToHours(t.minutes)}h</div>
 
               {openTaskId === t.id && (
                 <div className="descBox">
@@ -186,6 +197,7 @@ export function MemberFolder({
             </div>
 
             <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => onDuplicateTask(t.id)}>복제</button>
               <button className="btn" onClick={() => onUnassign(t.id)}>해제</button>
               <button
                 className="btn"
