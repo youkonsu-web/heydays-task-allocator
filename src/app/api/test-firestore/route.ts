@@ -4,9 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 
 export async function GET() {
   await adminDb.collection("test").add({
-    message: "Firestore 연결 성공",
+    message: "deploy test ok",
     createdAt: FieldValue.serverTimestamp(),
   });
-
   return NextResponse.json({ ok: true });
 }

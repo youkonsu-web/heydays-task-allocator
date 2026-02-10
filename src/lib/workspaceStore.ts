@@ -2,18 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BusinessKey, Member, Period, Task, minutes, sumAvailabilityMinutes } from "@/types";
-import { getDb, hasFirebaseConfig } from "@/lib/firebase";
-import {
-  collection,
-  doc,
-  onSnapshot,
-  setDoc,
-  updateDoc,
-  getDoc,
-  deleteDoc,
-  query,
-  orderBy,
-} from "firebase/firestore";
+import { getDb } from "@/lib/firebase";
+import { collection, doc, onSnapshot, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { makeDemoMembers, makeDemoTasks } from "@/lib/demoData";
 
 function pad2(n: number) {
@@ -97,6 +87,23 @@ export function useWorkspaceStore(workspaceId: string) {
     return { start, end, id: periodId(start, end), label: formatLabel(start, end) };
   }, []);
 
+  function apiUrl(pid: string) {
+    return `/api/board/${encodeURIComponent(workspaceId)}/${encodeURIComponent(pid)}`;
+  }
+
+  async function apiPost(pid: string, action: string, payload: Record<string, unknown> = {}) {
+    const res = await fetch(apiUrl(pid), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${action} failed: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
   useEffect(() => {
     if (!workspaceId) return;
 
@@ -135,15 +142,15 @@ export function useWorkspaceStore(workspaceId: string) {
       const periods = snap.docs.map((d) => d.data() as Period);
 
       if (periods.length === 0) {
-        const now = Date.now();
+        // 기간도 쓰기 막혀있으니 API로 ensure
         const p: Period = {
           id: defaultPeriod.id,
           startDate: defaultPeriod.start,
           endDate: defaultPeriod.end,
           label: defaultPeriod.label,
-          createdAt: now,
+          createdAt: Date.now(),
         };
-        await setDoc(doc(periodsCol, p.id), p);
+        await apiPost(p.id, "period.ensure", { startDate: p.startDate, endDate: p.endDate, label: p.label });
         return;
       }
 
@@ -162,31 +169,9 @@ export function useWorkspaceStore(workspaceId: string) {
     if (state.mode !== "firebase") return;
     if (!state.selectedPeriodId) return;
 
-    const periodId_ = state.selectedPeriodId;
-    const membersCol = collection(db, "workspaces", workspaceId, "periods", periodId_, "members");
-    const tasksCol = collection(db, "workspaces", workspaceId, "periods", periodId_, "tasks");
-
-    const seededKey = `seeded:${workspaceId}:${periodId_}`;
-    (async () => {
-      if (localStorage.getItem(seededKey) === "1") return;
-
-      let seeded = false;
-      const unsub = onSnapshot(membersCol, (snap) => {
-        if (!snap.empty) seeded = true;
-        unsub();
-      });
-
-      await new Promise((r) => setTimeout(r, 250));
-      if (!seeded) {
-        const demoMembers = makeDemoMembers();
-        const demoTasks = makeDemoTasks();
-        await Promise.all([
-          ...demoMembers.map((m) => setDoc(doc(membersCol, m.id), m)),
-          ...demoTasks.map((t) => setDoc(doc(tasksCol, t.id), t)),
-        ]);
-      }
-      localStorage.setItem(seededKey, "1");
-    })().catch(() => {});
+    const pid = state.selectedPeriodId;
+    const membersCol = collection(db, "workspaces", workspaceId, "periods", pid, "members");
+    const tasksCol = collection(db, "workspaces", workspaceId, "periods", pid, "tasks");
 
     const unsubMembers = onSnapshot(membersCol, (snap) => {
       const members = snap.docs.map((d) => d.data() as Member).sort(sortByOrder);
@@ -249,29 +234,16 @@ export function useWorkspaceStore(workspaceId: string) {
       return;
     }
 
-    const db = getDb();
-    if (!db) return;
-
-    const periodsCol = collection(db, "workspaces", workspaceId, "periods");
-    const p: Period = { id, startDate: start, endDate: end, label, createdAt: Date.now() };
-    await setDoc(doc(periodsCol, id), p, { merge: true });
+    await apiPost(id, "period.ensure", { startDate: start, endDate: end, label });
     setState((prev) => ({ ...prev, selectedPeriodId: id }));
     showToast("✅ 기간 탭을 생성했습니다.");
-  }
-
-  function getCols() {
-    const db = getDb();
-    if (!db) return null;
-    if (!state.selectedPeriodId) return null;
-    return {
-      membersCol: collection(db, "workspaces", workspaceId, "periods", state.selectedPeriodId, "members"),
-      tasksCol: collection(db, "workspaces", workspaceId, "periods", state.selectedPeriodId, "tasks"),
-    };
   }
 
   async function assignTask(taskId: string, memberId: string | null) {
     const task = state.tasks.find((t) => t.id === taskId);
     if (!task) return;
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
 
     if (memberId) {
       const m = state.members.find((x) => x.id === memberId);
@@ -294,12 +266,13 @@ export function useWorkspaceStore(workspaceId: string) {
       return;
     }
 
-    const cols = getCols();
-    if (!cols) return;
-    await updateDoc(doc(cols.tasksCol, taskId), { assignedTo: memberId ?? null });
+    await apiPost(pid, "task.assign", { taskId, memberId: memberId ?? null });
   }
 
   async function updateMemberAvailability(memberId: string, patch: Partial<Member>) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     if (state.mode === "demo") {
       setState((prev) => ({
         ...prev,
@@ -307,12 +280,14 @@ export function useWorkspaceStore(workspaceId: string) {
       }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    await updateDoc(doc(cols.membersCol, memberId), patch as any);
+
+    await apiPost(pid, "member.update", { memberId, patch });
   }
 
   async function updateMemberName(memberId: string, name: string) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const newName = (name || "").trim();
     if (!newName) return;
 
@@ -323,13 +298,13 @@ export function useWorkspaceStore(workspaceId: string) {
       }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    await updateDoc(doc(cols.membersCol, memberId), { name: newName });
+
+    await apiPost(pid, "member.update", { memberId, patch: { name: newName } });
   }
 
   async function deleteMember(memberId: string) {
-    const affected = state.tasks.filter((t) => t.assignedTo === memberId);
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
 
     if (state.mode === "demo") {
       setState((prev) => ({
@@ -339,14 +314,14 @@ export function useWorkspaceStore(workspaceId: string) {
       }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
 
-    await Promise.all(affected.map((t) => updateDoc(doc(cols.tasksCol, t.id), { assignedTo: null })));
-    await deleteDoc(doc(cols.membersCol, memberId));
+    await apiPost(pid, "member.delete", { memberId });
   }
 
   async function updateTask(taskId: string, patch: Partial<Task>) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     if (state.mode === "demo") {
       setState((prev) => ({
         ...prev,
@@ -354,22 +329,26 @@ export function useWorkspaceStore(workspaceId: string) {
       }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    await updateDoc(doc(cols.tasksCol, taskId), patch as any);
+
+    await apiPost(pid, "task.update", { taskId, patch });
   }
 
   async function deleteTask(taskId: string) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     if (state.mode === "demo") {
       setState((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.id !== taskId) }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    await deleteDoc(doc(cols.tasksCol, taskId));
+
+    await apiPost(pid, "task.delete", { taskId });
   }
 
-  function createTask(title: string, mins: number, business: BusinessKey, important: boolean, description: string) {
+  async function createTask(title: string, mins: number, business: BusinessKey, important: boolean, description: string) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const now = Date.now();
     const maxOrder = state.tasks.reduce((mx, t) => Math.max(mx, Number(t.order) || 0), 0);
 
@@ -388,13 +367,14 @@ export function useWorkspaceStore(workspaceId: string) {
       setState((prev) => ({ ...prev, tasks: [t, ...prev.tasks].sort(sortByOrder) }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    setDoc(doc(cols.tasksCol, t.id), t);
+
+    await apiPost(pid, "task.create", { task: t });
   }
 
-  // ✅ 복제: 동일 업무를 “미배정”으로 하나 더 생성
   async function duplicateTask(taskId: string) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const src = state.tasks.find((t) => t.id === taskId);
     if (!src) return;
 
@@ -407,7 +387,7 @@ export function useWorkspaceStore(workspaceId: string) {
       assignedTo: undefined,
       order: maxOrder + 100,
       createdAt: now,
-      title: src.title, // 그대로
+      title: src.title,
     };
 
     if (state.mode === "demo") {
@@ -415,12 +395,13 @@ export function useWorkspaceStore(workspaceId: string) {
       return;
     }
 
-    const cols = getCols();
-    if (!cols) return;
-    await setDoc(doc(cols.tasksCol, copy.id), copy);
+    await apiPost(pid, "task.duplicate", { task: copy });
   }
 
-  function createMember(name: string) {
+  async function createMember(name: string) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const now = Date.now();
     const maxOrder = state.members.reduce((mx, m) => Math.max(mx, Number(m.order) || 0), 0);
 
@@ -436,12 +417,14 @@ export function useWorkspaceStore(workspaceId: string) {
       setState((prev) => ({ ...prev, members: [m, ...prev.members].sort(sortByOrder) }));
       return;
     }
-    const cols = getCols();
-    if (!cols) return;
-    setDoc(doc(cols.membersCol, m.id), m);
+
+    await apiPost(pid, "member.create", { member: m });
   }
 
   async function reorderTasks(orderedIds: string[]) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const idToOrder = new Map<string, number>();
     orderedIds.forEach((id, idx) => idToOrder.set(id, (idx + 1) * 100));
 
@@ -454,12 +437,14 @@ export function useWorkspaceStore(workspaceId: string) {
       return;
     }
 
-    const cols = getCols();
-    if (!cols) return;
-    await Promise.all(orderedIds.map((id) => updateDoc(doc(cols.tasksCol, id), { order: idToOrder.get(id)! })));
+    const orders = orderedIds.map((id) => ({ id, order: idToOrder.get(id)! }));
+    await apiPost(pid, "reorder.tasks", { orders });
   }
 
   async function reorderMembers(orderedIds: string[]) {
+    const pid = state.selectedPeriodId;
+    if (!pid) return;
+
     const idToOrder = new Map<string, number>();
     orderedIds.forEach((id, idx) => idToOrder.set(id, (idx + 1) * 100));
 
@@ -472,9 +457,8 @@ export function useWorkspaceStore(workspaceId: string) {
       return;
     }
 
-    const cols = getCols();
-    if (!cols) return;
-    await Promise.all(orderedIds.map((id) => updateDoc(doc(cols.membersCol, id), { order: idToOrder.get(id)! })));
+    const orders = orderedIds.map((id) => ({ id, order: idToOrder.get(id)! }));
+    await apiPost(pid, "reorder.members", { orders });
   }
 
   const periodYearMonths = useMemo(() => {
@@ -499,13 +483,13 @@ export function useWorkspaceStore(workspaceId: string) {
     createMember,
     updateTask,
     deleteTask,
-    duplicateTask, // ✅ 추가
+    duplicateTask,
 
     reorderTasks,
     reorderMembers,
 
     toast,
-    hasFirebaseConfig: hasFirebaseConfig(),
+    // hasFirebaseConfig는 기존 lib/firebase가 관리 중이라 여기선 생략/유지해도 됨
     defaultPeriod,
   };
 }
